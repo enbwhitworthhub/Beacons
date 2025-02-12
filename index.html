@@ -1,1 +1,360 @@
+// Add new variables for stars and spaceship
+let stars;
+let spaceship;
+const spaceshipOrbitRadius = 4;
+let spaceshipAngle = 0;
 
+// Mouse coords in [-1..1]
+const mousePos = new THREE.Vector2();
+const raycaster = new THREE.Raycaster();
+
+// Parameters
+const interactionRadius = 1.5;
+const maxGlowIntensity = 5;
+const baseGlowIntensity = 0.5;
+const dispersalForce = 0.08;
+const returnForce = 0.02;
+const dampingFactor = 0.95;
+const rotationSpeed = 0.0025;
+const spaceshipSpeed = 0.005;
+
+// Environment backgrounds
+const backgrounds = {
+    space: {
+        colors: [0x000000, 0x0a1a3f],  // Black to deep blue
+        fog: { color: 0x0a1a3f, near: 15, far: 40 },
+        particleColors: [0x88ccff, 0x7dabf1, 0x6a8dff]  // Bright blue particles
+    },
+    sunset: {
+        colors: [0x1f1033, 0x661425],  // Deep purple to dark red
+        fog: { color: 0x661425, near: 15, far: 40 },
+        particleColors: [0x330033, 0x4d004d, 0x660066]  // Dark purple particles for contrast
+    },
+    night: {
+        colors: [0x0a1a2f, 0x1e3f5a],  // Deep blue to muted blue
+        fog: { color: 0x1e3f5a, near: 15, far: 40 },
+        particleColors: [0x000066, 0x000080, 0x000099]  // Dark blue particles
+    },
+    abstract: {
+        colors: [0x1a0f2f, 0x4a237a],  // Deep purple to medium purple
+        fog: { color: 0x4a237a, near: 15, far: 40 },
+        particleColors: [0x2a0066, 0x3a0080, 0x4a0099]  // Deep purple particles
+    }
+};
+
+// Init
+init();
+animate();
+
+function createGradientBackground(topColor, bottomColor) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 2;
+    canvas.height = 2;
+
+    const context = canvas.getContext('2d');
+    const gradient = context.createLinearGradient(0, 0, 0, 2);
+    gradient.addColorStop(0, '#' + new THREE.Color(topColor).getHexString());
+    gradient.addColorStop(1, '#' + new THREE.Color(bottomColor).getHexString());
+
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 2, 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+}
+
+function setEnvironment(envName) {
+    const env = backgrounds[envName];
+    if (!env) return;
+
+    // Update background
+    scene.background = createGradientBackground(env.colors[0], env.colors[1]);
+
+    // Update fog
+    scene.fog = new THREE.Fog(env.fog.color, env.fog.near, env.fog.far);
+
+    // Update particle colors
+    updateParticleColors(env.particleColors);
+}
+
+function updateParticleColors(colors) {
+    particles.forEach((p, index) => {
+        const baseColorValue = colors[index % colors.length];
+        p.baseColor = new THREE.Color(baseColorValue);
+        p.mesh.material.color.set(baseColorValue);
+        p.mesh.material.emissive.set(baseColorValue);
+    });
+}
+
+function init() {
+    // 1. Scene
+    scene = new THREE.Scene();
+
+    // Set initial environment
+    setEnvironment('space');
+
+    // 2. Camera
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+    camera.position.z = 5;
+
+    // 3. Renderer
+    const container = document.getElementById("canvas-container");
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.5;
+    container.appendChild(renderer.domElement);
+
+    // 4. Controls
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // 5. Effect Composer + Bloom
+    composer = new THREE.EffectComposer(renderer);
+    const renderPass = new THREE.RenderPass(scene, camera);
+    composer.addPass(renderPass);
+
+    const bloomPass = new THREE.UnrealBloomPass(
+        new THREE.Vector2(container.clientWidth, container.clientHeight),
+        1.5, // strength
+        0.4,  // radius
+        0.1   // threshold
+    );
+    composer.addPass(bloomPass);
+
+    // 6. Lights
+    const ambientLight = new THREE.AmbientLight(0x111111);
+    scene.add(ambientLight);
+
+    const pointLight = new THREE.PointLight(0x88ccff, 1);
+    pointLight.position.set(5, 5, 5);
+    scene.add(pointLight);
+
+    // 7. Add the particle group
+    scene.add(group);
+
+    // 8. Create particles
+    createParticles();
+
+    //Create stars before other elements
+    createStars();
+
+    //Create spaceship after particles
+    createSpaceship();
+
+    // 9. Events
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("resize", onWindowResize);
+
+    // 10. Environment selector
+    const envSelector = document.getElementById('environment-selector');
+    if (envSelector) {
+        envSelector.addEventListener('change', (e) => {
+            setEnvironment(e.target.value);
+        });
+    }
+}
+
+function createParticles() {
+    const count = 2500;
+    const radius = 2;
+    const geometry = new THREE.SphereGeometry(0.015, 6, 6);
+    const colors = backgrounds.space.particleColors;  // Start with space theme colors
+
+    for (let i = 0; i < count; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        const x = radius * Math.sin(phi) * Math.cos(theta);
+        const y = radius * Math.sin(phi) * Math.sin(theta);
+        const z = radius * Math.cos(phi);
+
+        const baseColorValue = colors[Math.floor(Math.random() * colors.length)];
+        const baseColor = new THREE.Color(baseColorValue);
+
+        const material = new THREE.MeshStandardMaterial({
+            color: baseColorValue,
+            emissive: baseColorValue,
+            metalness: 0.5,
+            roughness: 0.2,
+            toneMapped: false
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(x, y, z);
+        group.add(mesh);
+
+        particles.push({
+            mesh,
+            position: mesh.position.clone(),
+            originalPosition: mesh.position.clone(),
+            velocity: new THREE.Vector3(),
+            quaternion: new THREE.Quaternion(),
+            baseColor
+        });
+    }
+}
+
+function updateParticles() {
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    raycaster.setFromCamera(mousePos, camera);
+    const mousePosition3D = new THREE.Vector3();
+    raycaster.ray.intersectPlane(plane, mousePosition3D);
+
+    particles.forEach((p) => {
+        const distanceToMouse = mousePosition3D.distanceTo(p.position);
+        const isInRange = distanceToMouse < interactionRadius;
+
+        if (isInRange) {
+            const forceMult = dispersalForce * (1 - distanceToMouse / interactionRadius);
+            const repulsionDir = p.position.clone().sub(mousePosition3D).normalize();
+            p.velocity.add(repulsionDir.multiplyScalar(forceMult * (1 + Math.random() * 0.2)));
+
+            const intensity = THREE.MathUtils.lerp(
+                maxGlowIntensity,
+                baseGlowIntensity,
+                distanceToMouse / interactionRadius
+            );
+            p.mesh.material.emissive = p.baseColor.clone().multiplyScalar(intensity);
+        } else {
+            p.mesh.material.emissive = p.baseColor.clone().multiplyScalar(baseGlowIntensity);
+        }
+
+        const distanceToOrigin = p.position.distanceTo(p.originalPosition);
+        const returnVector = p.originalPosition.clone()
+            .sub(p.position)
+            .normalize()
+            .multiplyScalar(returnForce * distanceToOrigin);
+
+        p.velocity.add(returnVector);
+        p.velocity.multiplyScalar(dampingFactor);
+        p.position.add(p.velocity);
+
+        p.mesh.position.copy(p.position);
+
+        if (p.velocity.length() > 0.001) {
+            p.quaternion.setFromUnitVectors(
+                new THREE.Vector3(0, 1, 0),
+                p.velocity.clone().normalize()
+            );
+            p.mesh.quaternion.slerp(p.quaternion, 0.1);
+        }
+    });
+
+    group.rotation.y += rotationSpeed;
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    updateParticles();
+    updateSpaceship();
+    controls.update();
+    composer.render();
+}
+
+function onWindowResize() {
+    const container = document.getElementById("canvas-container");
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    composer.setSize(container.clientWidth, container.clientHeight);
+}
+
+function onMouseMove(e) {
+    const container = document.getElementById("canvas-container");
+    const rect = container.getBoundingClientRect();
+    mousePos.x = ((e.clientX - rect.left) / container.clientWidth) * 2 - 1;
+    mousePos.y = -((e.clientY - rect.top) / container.clientHeight) * 2 + 1;
+}
+
+
+function createStars() {
+    const starsGeometry = new THREE.BufferGeometry();
+    const starCount = 1000;
+    const positions = new Float32Array(starCount * 3);
+    const sizes = new Float32Array(starCount);
+
+    for (let i = 0; i < starCount; i++) {
+        const i3 = i * 3;
+        // Position stars in a large sphere around the scene
+        const radius = 20 + Math.random() * 10;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+
+        positions[i3] = radius * Math.sin(phi) * Math.cos(theta);
+        positions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+        positions[i3 + 2] = radius * Math.cos(phi);
+
+        sizes[i] = Math.random() * 2;
+    }
+
+    starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    starsGeometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+    const starsMaterial = new THREE.PointsMaterial({
+        color: 0xffffff,
+        size: 0.1,
+        transparent: true,
+        opacity: 0.8,
+        sizeAttenuation: true
+    });
+
+    stars = new THREE.Points(starsGeometry, starsMaterial);
+    scene.add(stars);
+}
+
+function createSpaceship() {
+    // Create a simple spaceship using basic shapes
+    const shipGroup = new THREE.Group();
+
+    // Body - elongated cone
+    const bodyGeometry = new THREE.ConeGeometry(0.2, 0.8, 8);
+    const bodyMaterial = new THREE.MeshPhongMaterial({
+        color: 0x444444,
+        shininess: 100,
+        emissive: 0x111111
+    });
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    body.rotation.x = Math.PI / 2;
+    shipGroup.add(body);
+
+    // Wings
+    const wingGeometry = new THREE.BoxGeometry(0.6, 0.1, 0.2);
+    const wingMaterial = new THREE.MeshPhongMaterial({
+        color: 0x666666,
+        shininess: 80,
+        emissive: 0x222222
+    });
+    const wings = new THREE.Mesh(wingGeometry, wingMaterial);
+    wings.position.z = -0.2;
+    shipGroup.add(wings);
+
+    // Engine glow
+    const engineGeometry = new THREE.SphereGeometry(0.1, 8, 8);
+    const engineMaterial = new THREE.MeshPhongMaterial({
+        color: 0x00ff00,
+        emissive: 0x00ff00,
+        shininess: 100
+    });
+    const engine = new THREE.Mesh(engineGeometry, engineMaterial);
+    engine.position.z = -0.4;
+    engine.scale.x = 0.5;
+    shipGroup.add(engine);
+
+    spaceship = shipGroup;
+    scene.add(spaceship);
+}
+
+function updateSpaceship() {
+    spaceshipAngle += spaceshipSpeed;
+
+    // Calculate new position
+    spaceship.position.x = Math.cos(spaceshipAngle) * spaceshipOrbitRadius;
+    spaceship.position.y = Math.sin(spaceshipAngle) * spaceshipOrbitRadius;
+
+    // Make spaceship face direction of travel
+    spaceship.rotation.z = spaceshipAngle + Math.PI / 2;
+}
